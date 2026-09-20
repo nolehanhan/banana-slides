@@ -57,17 +57,21 @@ services:
       # 补丁仅在 IMAGE_API_BASE 含 /ai/v1 时生效，换回免费模型不影响。
       # 回滚：注释掉下一行并重启后端容器即可。
       - ./patch/openai_provider.py:/app/backend/services/ai_providers/image/openai_provider.py:ro
-      # [自定义补丁 2026-09-20] 图片多源轮询与失败兜底：
+      # [已回滚 2026-09-20 11:59] 图片多源轮询与失败兜底 —— 恢复为官方原版行为。
+      # 原补丁做了两件事：
       #   · ai_providers_init.py —— 原 get_image_provider 改名 _build_single_image_provider，
-      #     新的 get_image_provider 在其上包一层兜底；把两个入口（ai_service_manager 缓存路径
-      #     与 AIService.__init__ 直接构造路径）一次性覆盖。
+      #     新的 get_image_provider 在其上包一层兜底；覆盖两个入口（ai_service_manager 缓存路径
+      #     与 AIService.__init__ 直接构造路径）。
       #   · fallback.py —— 兜底实现本体（失败分类、冷却登记、多源调度）。
-      # 未配置任何 IMAGE_FALLBACK_n_* 时行为与改动前一致。
+      # 回滚原因：`.env` 中【一个备用源都没配】（IMAGE_FALLBACK_n_* 全为空，仅候选 0 主源），
+      #   兜底逻辑实际一直空转（instance/fallback_state.json 从未生成过），
+      #   留着的唯一效果是每次生图多包一层调度代码 → 去掉更干净、排查链更短。
+      # 源码保留在 patch/ 下未删。恢复方法：取消下面两行注释，并按 patch/README.md
+      #   在 .env 里补 IMAGE_FALLBACK_n_* 备用源，然后重启后端容器。
       # 注意：这两个补丁基于【容器内镜像自带的代码】制作，不是宿主机仓库那份；
       #      换镜像版本后需重新 docker cp 出来改，否则会挂载出旧代码。
-      # 回滚：注释掉下面两行并重启后端容器即可。
-      - ./patch/ai_providers_init.py:/app/backend/services/ai_providers/__init__.py:ro
-      - ./patch/fallback.py:/app/backend/services/ai_providers/fallback.py:ro
+      # - ./patch/ai_providers_init.py:/app/backend/services/ai_providers/__init__.py:ro
+      # - ./patch/fallback.py:/app/backend/services/ai_providers/fallback.py:ro
       # GCP 服务账户文件（仅 Vertex AI 用户需要取消下一行注释）
       # - ./gcp-service-account.json:/app/gcp-service-account.json:ro
     restart: unless-stopped
