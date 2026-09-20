@@ -31,7 +31,7 @@ LibreOffice，**从不 COPY 宿主机源码**。所以：
 
 | 补丁文件 | 覆盖容器内路径 | 作用 |
 |---|---|---|
-| `file_parser_service.py` ✅生效中 | `services/file_parser_service.py` | ① PDF 改走**本地 PyMuPDF** 解析。原版对所有 PDF 一律调 MinerU 云端，未配 token 时静默降级为空壳（每页只有 `Page N`），导致 PPT 翻新生成的内容与原文无关。② 修正 `__init__` 参数名不匹配（补 `ai_provider_format` / `upload_folder` / `**ignored_kwargs`），上游调用方与类定义用了两套参数名，会抛 `TypeError` 致「重新解析此页」失败。 |
+| `file_parser_service.py` ✅生效中 | `services/file_parser_service.py` | ① **PDF 解析方式可切换**（环境变量 `PDF_LOCAL_PARSE`，默认 `false` = 走 MinerU）。**为什么默认走 MinerU**：MinerU 会把 PDF 内嵌图片抠出来上传、并调视觉模型生成图片说明，markdown 里才有 `![](地址)`；PPT 翻新时原 PPT 里的图片就是靠这一步变成页面描述里的素材，后续「生成图片」再用 `extract_image_urls_from_markdown` 从描述里抓出来当参考图。设 `true` 走本地 PyMuPDF：秒出、离线，但**只提文字、不抠图**，图片素材会全部丢失。**MinerU 失败时自动降级为本地提取并打 warning**，不会让整个翻新任务失败。② 修正 `__init__` 参数名不匹配（补 `ai_provider_format` / `upload_folder` / `**ignored_kwargs`），上游调用方与类定义用了两套参数名，会抛 `TypeError` 致「重新解析此页」失败。 |
 | `openai_provider.py` ✅生效中 | `services/ai_providers/image/openai_provider.py` | ① 适配 AIHubMix **`/ai/v1` 异步图像通道**（豆包 Seedream 等）：该通道只认 `aspect_ratio`、响应是任务对象而非 `data[]`、图片需带鉴权下载。**仅在 `IMAGE_API_BASE` 含 `/ai/v1` 时生效**（当前配的是 `aihubmix.com/v1`，此分支休眠），切回免费模型不受影响。② 支持**多张参考图**：上游 `_generate_with_images_api` 只取 `ref_images[0]`、其余静默丢弃；本补丁按 `_MAX_REF_IMAGES = 8` 全量下发（多图时单张等比缩到长边 ≤ `_MULTI_REF_MAX_EDGE = 1024`，只缩不放）。 |
 | `ai_providers_init.py` ✅生效中 | `services/ai_providers/__init__.py` | 原 `get_image_provider` 改名 `_build_single_image_provider`，新的 `get_image_provider` 在其上包一层兜底；一次覆盖两个入口（`ai_service_manager` 缓存路径与 `AIService.__init__` 直接构造路径）。 |
 | `fallback.py` ✅生效中 | `services/ai_providers/fallback.py` | 生图**多源轮询与失败兜底**：失败分类（额度 / 鉴权 / 模型不存在 / 参数 / 瞬时 / 内容拦截）、冷却登记（落盘 `instance/fallback_state.json`，容器重启后仍记得哪个源已耗尽）、多源调度（`priority` / `round_robin`）、全冷却时的降级试探。 |
@@ -125,7 +125,7 @@ IMAGE_FALLBACK_1_PROTOCOL=images
 
 | 项 | 结论 |
 |---|---|
-| `file_parser_service.py`（本地 PDF 解析） | **保留**。MinerU token 虽已配（在数据库 `settings.mineru_token`），但本机网络下 MinerU 结果 CDN 被 SNI 阻断、须开代理走全局，且云端排队更慢。本地 PyMuPDF 秒出且不受网络影响。 |
+| `file_parser_service.py`（本地 PDF 解析） | **2026-09-20 12:40 改为可切换，默认切回 MinerU**。当日查清因果链：本地解析只抠文字不抠图 → markdown 里 0 个图片链接 → 页面描述里 0 张图 → 生成图片时抓不到任何参考图，**原 PPT 里的图片等于被丢弃**。文件仍需挂载，因为其中还含「参数名不匹配」的上游 bug 修复（回滚挂载会重新引爆 `TypeError`）。⚠️ 走 MinerU 必须先解决 `cdn-mineru.openxlab.org.cn` 的 TLS 握手阻断（见下）。 |
 | `openai_provider.py`（AIHubMix `/ai/v1` 通道） | **保留**。该分支要求 `IMAGE_API_BASE` 含 `/ai/v1`，当前配的是 `https://aihubmix.com/v1`，**分支本就休眠**＝等于已回滚；且同一文件还承载着多参考图（8 张）支持，删掉会连带丢失。 |
 | compose 里的出网代理段（`HTTP_PROXY` / `extra_hosts`） | **必须保留**。图片生成走 `aihubmix.com`，该域名在本机被 DNS 污染 + SNI 阻断，容器不继承宿主机代理，去掉后生图直接不可用。 |
 

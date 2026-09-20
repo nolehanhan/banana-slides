@@ -148,14 +148,15 @@ class FileParserService:
                 logger.info(f"File {filename} is a spreadsheet file, using markitdown...")
                 return self._parse_spreadsheet_file(file_path, filename)
 
-            # PDF: extract the text layer locally first (offline, no token needed).
-            # Scanned/image-only PDFs yield no text -> returns None -> falls through
-            # to the MinerU OCR path below.
-            if file_ext == 'pdf':
+            # PDF 解析：默认走 MinerU 云端。
+            # 原因：MinerU 会把内嵌图片抠出来、上传并生成图片说明，图片素材（参考图）
+            # 全靠这一步；本地 PyMuPDF 只抠文字，markdown 里不会出现任何图片链接。
+            # 设 PDF_LOCAL_PARSE=true 可切回本地提取（快、离线、不受网络影响，但不含图片）。
+            if file_ext == 'pdf' and self._local_pdf_enabled():
                 local_result = self._parse_pdf_file(file_path, filename)
                 if local_result is not None:
                     return local_result
-                logger.info(f"No text layer in {filename}, falling back to MinerU OCR...")
+                logger.info(f"PDF {filename} 本地无文字层，回退 MinerU OCR...")
             
             # For other file types, use MinerU service
             logger.info(f"File {filename} requires MinerU parsing...")
@@ -180,6 +181,16 @@ class FileParserService:
             logger.info("Step 3/4: Waiting for parsing to complete...")
             markdown_content, extract_id, error = self._poll_result(batch_id)
             if error:
+                # 兜底：MinerU 不可用时（结果 CDN 被网络阻断 / 额度耗尽 / 服务异常）
+                # 退回本地文字提取，避免整页解析直接失败拖垮整个翻新任务。
+                # 代价：本次结果【不含图片素材】，日志有 warning 可查。
+                if file_ext == 'pdf':
+                    local_result = self._parse_pdf_file(file_path, filename)
+                    if local_result is not None:
+                        logger.warning(
+                            f"MinerU 解析失败（{error}），已降级为本地文字提取：本次结果不含图片素材。"
+                        )
+                        return local_result
                 return batch_id, None, None, error, 0
             
             logger.info("File parsed successfully.")
@@ -260,6 +271,16 @@ class FileParserService:
             logger.error(error_msg)
             return None, None, None, error_msg, 0
     
+    @staticmethod
+    def _local_pdf_enabled() -> bool:
+        """PDF 是否改用本地 PyMuPDF 提取（默认关 = 走 MinerU）。
+
+        默认关的原因：MinerU 会抠出内嵌图并生成图片说明，PPT 翻新时原 PPT 里的图片
+        正是靠这一步变成页面描述中的素材；本地提取没有这段能力。
+        只有在「要离线快速拿文字、且不需要图片素材」时才设为 true。
+        """
+        return os.environ.get('PDF_LOCAL_PARSE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
     def _parse_pdf_file(self, file_path: str, filename: str) -> Optional[tuple]:
         """
         Extract a PDF's text layer locally with PyMuPDF — no network, no token.
