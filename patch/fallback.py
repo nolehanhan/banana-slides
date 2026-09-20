@@ -285,10 +285,17 @@ class CoolDownRegistry:
             st['last_error'] = kind
             changed = False
             if kind in LONG_COOLDOWN_KINDS:
-                st['cooldown_until'] = max(st['cooldown_until'], now + long_cooldown)
-                st['reason'] = kind
+                # 额度 / 鉴权 / 模型下架这三类的恢复都取决于【外部事件】——配额按日重置、
+                # 你去控制台换了 key、平台把模型重新上架。它们不会因为我们多试几次而提前。
+                # 所以这里【不续期】：只在"已经解冻"时才重新计时。
+                # 若写成 max(cooldown_until, now + cooldown)，则「全冷却降级试探」每失败
+                # 一次就把解冻时刻往后推一个完整冷却周期 → 用户越勤点重试，越等不到恢复
+                # （实测：13:55 首次耗尽本该 21:55 解冻，被 330 次重试推到 23:08）。
+                if st['cooldown_until'] <= now:
+                    st['cooldown_until'] = now + long_cooldown
+                    st['reason'] = kind
+                    changed = True
                 st['consecutive_failures'] = 0
-                changed = True
             elif kind in SHORT_COOLDOWN_KINDS and st['consecutive_failures'] >= threshold:
                 st['cooldown_until'] = max(st['cooldown_until'], now + short_cooldown)
                 st['reason'] = kind
