@@ -1,0 +1,19 @@
+# 派生自官方预构建后端镜像，仅补装 LibreOffice
+#
+# 为什么需要：banana-slides 的「PPT 翻新」功能在收到 .pptx/.ppt 时，会调用
+#     libreoffice --headless --convert-to pdf --outdir <dir> <file>
+# 把 PPTX 转成 PDF 后逐页渲染成图。官方镜像未包含 LibreOffice，导致上传 PPTX 时
+# 直接报「PPTX 转换需要安装 LibreOffice」。
+#
+# 为什么不装完整版 libreoffice：转换 PPTX 只需要 impress 模块（会连带 draw 等），
+# --no-install-recommends 可跳过后端 Java、数据库、词典等无关组件，体积小很多。
+#
+# 中文字体无需额外安装：基础镜像已内置 Noto CJK（含 SC/TC/JP/KR），
+# LibreOffice 渲染时会把 PPT 里的「微软雅黑/宋体」等回退到 Noto CJK。
+
+FROM anoinex/banana-slides-backend:latest
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libreoffice-impress \
+ && rm -rf /var/lib/apt/lists/* \
+ && libreoffice --headless --version 2>/dev/null | head -1

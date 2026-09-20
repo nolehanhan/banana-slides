@@ -2,8 +2,14 @@
 
 services:
   backend:
-    # 使用预构建的后端镜像
-    image: ${DOCKER_IMAGE_BACKEND:-anoinex/banana-slides-backend:latest}
+    # 基于官方预构建镜像派生，仅补装 LibreOffice（PPTX → PDF 转换用）
+    # [自定义 2026-09-19] 原为直接使用 anoinex/banana-slides-backend:latest，
+    # 该镜像不含 LibreOffice，导致「PPT 翻新」上传 .pptx 时报错。
+    # 回滚：删掉 build 段、并把 image 改回 ${DOCKER_IMAGE_BACKEND:-anoinex/banana-slides-backend:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.backend-libreoffice
+    image: banana-slides-backend:libreoffice
     container_name: banana-slides-backend
     ports:
       # 宿主机端口:容器内部端口
@@ -17,11 +23,51 @@ services:
     # Vertex AI 配置（使用 Vertex AI 时取消以下注释）
     # environment:
     #   - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-service-account.json
+    # [自定义 2026-09-20] 出网代理注入：本机网络下 aihubmix.com 被 DNS 污染 + SNI 阻断，
+    # 而 Docker 容器【不继承】宿主机代理，必须在 compose 里显式给。
+    #   宿主代理 = FlClash，mixed 端口 127.0.0.1:7890；容器经 host.docker.internal 访问。
+    #   NO_PROXY 内为本来就直连可通的域名（DeepSeek / MinerU API / 百度），
+    #   不绕代理 → 更快，且在 FlClash 关闭时这些功能不受影响。
+    #   ⚠️ cdn-mineru.openxlab.org.cn 故意【不】放进 NO_PROXY：FlClash 规则模式下它被
+    #   判为直连（等于没走代理）仍会失败，需在 FlClash 侧把它强制走代理才通。
+    #   ⚠️ 关掉 FlClash 后 aihubmix 生图会连不上，属预期行为。
+    # 回滚：注释掉下面整个 environment 段与 extra_hosts 段并重启后端。
+    environment:
+      - HTTP_PROXY=http://host.docker.internal:7890
+      - HTTPS_PROXY=http://host.docker.internal:7890
+      - http_proxy=http://host.docker.internal:7890
+      - https_proxy=http://host.docker.internal:7890
+      - NO_PROXY=localhost,127.0.0.1,::1,host.docker.internal,backend,frontend,api.deepseek.com,mineru.net,.baidubce.com
+      - no_proxy=localhost,127.0.0.1,::1,host.docker.internal,backend,frontend,api.deepseek.com,mineru.net,.baidubce.com
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # 持久化数据库
       - ./backend/instance:/app/backend/instance
       # 持久化上传的文件
       - ./uploads:/app/uploads
+      # [自定义补丁 2026-09-19] PDF 文字提取改走本地 PyMuPDF：
+      # 原版对 PDF 一律调用 MinerU 云服务，未配 mineru_token 时静默降级为
+      # "Page N" 空壳，导致 PPT 翻新生成的内容与原文无关。
+      # 回滚：注释掉下一行并重启后端容器即可。
+      - ./patch/file_parser_service.py:/app/backend/services/file_parser_service.py:ro
+      # [自定义补丁 2026-09-19] 生图改走 AIHubMix 的 /ai/v1 图像通道（豆包 Seedream）：
+      # 该通道只认 aspect_ratio（不认 size）、响应是任务对象而非 data[]、
+      # 图片地址 content_url 需带鉴权下载 —— 三处都与标准 images API 不同。
+      # 补丁仅在 IMAGE_API_BASE 含 /ai/v1 时生效，换回免费模型不影响。
+      # 回滚：注释掉下一行并重启后端容器即可。
+      - ./patch/openai_provider.py:/app/backend/services/ai_providers/image/openai_provider.py:ro
+      # [自定义补丁 2026-09-20] 图片多源轮询与失败兜底：
+      #   · ai_providers_init.py —— 原 get_image_provider 改名 _build_single_image_provider，
+      #     新的 get_image_provider 在其上包一层兜底；把两个入口（ai_service_manager 缓存路径
+      #     与 AIService.__init__ 直接构造路径）一次性覆盖。
+      #   · fallback.py —— 兜底实现本体（失败分类、冷却登记、多源调度）。
+      # 未配置任何 IMAGE_FALLBACK_n_* 时行为与改动前一致。
+      # 注意：这两个补丁基于【容器内镜像自带的代码】制作，不是宿主机仓库那份；
+      #      换镜像版本后需重新 docker cp 出来改，否则会挂载出旧代码。
+      # 回滚：注释掉下面两行并重启后端容器即可。
+      - ./patch/ai_providers_init.py:/app/backend/services/ai_providers/__init__.py:ro
+      - ./patch/fallback.py:/app/backend/services/ai_providers/fallback.py:ro
       # GCP 服务账户文件（仅 Vertex AI 用户需要取消下一行注释）
       # - ./gcp-service-account.json:/app/gcp-service-account.json:ro
     restart: unless-stopped

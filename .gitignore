@@ -94,3 +94,10 @@ frontend/cap-real.mjs
 /banana-slides-landing.html
 /design-mockup.html
 /design-system-proposal.html
+
+# 本地配置/编排文件的备份文件（★含真实 API key，绝不入库）
+.env.bak*
+*.bak-*
+
+# patch/ 目录的说明文档（上面 *.md 被全局忽略，这里开例外）
+!patch/*.md
